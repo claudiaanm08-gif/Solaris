@@ -1,6 +1,7 @@
-from sqlalchemy import Column, Integer, String, Float, Date, ForeignKey, Text
+from sqlalchemy import Column, Integer, String, Float, Date, ForeignKey, Text, DateTime
 from sqlalchemy.orm import relationship
 from .database import Base
+from datetime import datetime
 
 class Cliente(Base):
     __tablename__ = "clientes"
@@ -24,10 +25,13 @@ class Contrato(Base):
     fecha_inicio = Column(Date, nullable=False)
     fecha_fin = Column(Date, nullable=False)
     condiciones = Column(Text)
+    archivo_pdf = Column(String)  # Ruta al archivo
+    nombre_archivo = Column(String)  # Nombre original
+    fecha_subida = Column(DateTime, default=datetime.utcnow)  # Nuevo campo
 
     cliente = relationship("Cliente", back_populates="contratos")
-    entregas = relationship("Entrega", back_populates="contrato", cascade="all, delete-orphan")
-    consumos = relationship("Consumo", back_populates="contrato", cascade="all, delete-orphan")
+    entregas = relationship("Entrega", back_populates="contrato")
+    consumos = relationship("Consumo", back_populates="contrato")
 
 
 class Entrega(Base):
@@ -52,3 +56,15 @@ class Consumo(Base):
     volumen_consumido = Column(Float, nullable=False)
 
     contrato = relationship("Contrato", back_populates="consumos")
+
+
+class Alerta(Base):
+    __tablename__ = "alertas"
+
+    id = Column(Integer, primary_key=True, index=True)
+    cliente_id = Column(Integer, ForeignKey("clientes.id"), nullable=True)
+    nivel = Column(String, nullable=False)  # verde | amarillo | rojo
+    mensaje = Column(String, nullable=False)
+    fecha = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    cliente = relationship("Cliente")
