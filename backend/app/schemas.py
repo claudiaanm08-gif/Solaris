@@ -117,6 +117,14 @@ class ProyeccionReabastecimiento(BaseModel):
     fecha_reabastecimiento_estimada: Optional[date] = None
 
 
+class ProyeccionFinanciera(BaseModel):
+    cliente_id: int
+    anio: int
+    ingreso_estimado: float
+    costo_estimado: float
+    margen_estimado: float
+
+
 class AlertaBase(BaseModel):
     cliente_id: Optional[int] = None
     nivel: str
@@ -206,3 +214,28 @@ class RagQueryResponse(BaseModel):
     pregunta: str
     respuesta: str
     fuentes: list[RagFuente]
+
+
+class RagSnippetRequest(BaseModel):
+    query: str
+    limit: int = 3
+    cliente_id: Optional[int] = None
+    contrato_id: Optional[int] = None
+    clause_type: Optional[str] = None
+
+
+class RagSnippet(BaseModel):
+    document_id: str | None = None
+    title: str | None = None
+    score: float | None = None
+    text: str
+    montos: list[str] = []
+    fechas: list[str] = []
+    porcentajes: list[str] = []
+    clausulas: list[str] = []
+
+
+class RagSnippetResponse(BaseModel):
+    query: str
+    matching_results: int
+    fragments: list[RagSnippet]

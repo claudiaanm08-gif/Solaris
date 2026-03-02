@@ -1,15 +1,18 @@
 import { useState } from 'react';
 import { Button, Fade, Grow, InputAdornment, TextField } from '@mui/material';
 import HelpOutlineOutlinedIcon from '@mui/icons-material/HelpOutlineOutlined';
-import { queryRag, reindexRag } from '../services/ragService';
+import { queryRag, queryRagSnippets, reindexRag } from '../services/ragService';
 import ClienteSelect from './ClienteSelect';
 import { useToast } from './toastContext';
 
 const RagConsulta = () => {
   const [clienteId, setClienteId] = useState('');
   const [pregunta, setPregunta] = useState('');
+  const [contratoId, setContratoId] = useState('');
+  const [clauseType, setClauseType] = useState('');
   const [respuesta, setRespuesta] = useState('');
   const [fuentes, setFuentes] = useState([]);
+  const [snippets, setSnippets] = useState([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
@@ -26,9 +29,19 @@ const RagConsulta = () => {
     setSuccess('');
     setReindexStatus('');
     try {
-      const data = await queryRag({ pregunta, clienteId: clienteId || undefined, topK: 3 });
-      setRespuesta(data.respuesta);
-      setFuentes(data.fuentes || []);
+      const [ragData, snippetData] = await Promise.all([
+        queryRag({ pregunta, clienteId: clienteId || undefined, topK: 3 }),
+        queryRagSnippets({
+          query: pregunta,
+          clienteId: clienteId || undefined,
+          contratoId: contratoId || undefined,
+          clauseType: clauseType || undefined,
+          limit: 3
+        })
+      ]);
+      setRespuesta(ragData.respuesta);
+      setFuentes(ragData.fuentes || []);
+      setSnippets(snippetData.fragments || []);
       setSuccess('Consulta completada.');
       pushToast('Consulta completada.', 'success');
     } catch (err) {
@@ -74,6 +87,24 @@ const RagConsulta = () => {
             onChange={(event) => setClienteId(event.target.value)}
             includeAll
             allLabel="Todos"
+          />
+        </label>
+        <label>
+          Contrato (opcional)
+          <TextField
+            value={contratoId}
+            onChange={(event) => setContratoId(event.target.value)}
+            placeholder="Ej. 12"
+            aria-label="Contrato"
+          />
+        </label>
+        <label>
+          Tipo de cláusula (opcional)
+          <TextField
+            value={clauseType}
+            onChange={(event) => setClauseType(event.target.value)}
+            placeholder="Ej. penalización"
+            aria-label="Tipo de cláusula"
           />
         </label>
         <label className="rag__full">
@@ -145,6 +176,69 @@ const RagConsulta = () => {
                 </li>
               ))}
             </ul>
+          </div>
+        </Grow>
+      )}
+
+      {snippets.length > 0 && (
+        <Grow in timeout={250}>
+          <div className="rag__snippets">
+            <h3>Fragmentos destacados</h3>
+            <div className="rag__snippet-grid">
+              {snippets.map((snippet, index) => (
+                <article className="rag__snippet-card" key={`${snippet.document_id || index}`}> 
+                  <header>
+                    <strong>{snippet.title || 'Documento'}</strong>
+                    {snippet.score !== null && snippet.score !== undefined && (
+                      <span className="rag__snippet-score">score {snippet.score.toFixed(2)}</span>
+                    )}
+                  </header>
+                  <p>{snippet.text}</p>
+                  <div className="rag__snippet-meta">
+                    {snippet.montos?.length > 0 && (
+                      <div>
+                        <span>Montos</span>
+                        <div className="rag__chips">
+                          {snippet.montos.map((monto) => (
+                            <span key={monto} className="rag__chip">{monto}</span>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                    {snippet.fechas?.length > 0 && (
+                      <div>
+                        <span>Fechas</span>
+                        <div className="rag__chips">
+                          {snippet.fechas.map((fecha) => (
+                            <span key={fecha} className="rag__chip">{fecha}</span>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                    {snippet.porcentajes?.length > 0 && (
+                      <div>
+                        <span>Porcentajes</span>
+                        <div className="rag__chips">
+                          {snippet.porcentajes.map((porcentaje) => (
+                            <span key={porcentaje} className="rag__chip">{porcentaje}</span>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                    {snippet.clausulas?.length > 0 && (
+                      <div>
+                        <span>Cláusulas</span>
+                        <div className="rag__chips">
+                          {snippet.clausulas.map((clausula) => (
+                            <span key={clausula} className="rag__chip">{clausula}</span>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                </article>
+              ))}
+            </div>
           </div>
         </Grow>
       )}

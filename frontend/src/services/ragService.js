@@ -23,3 +23,19 @@ export const queryRag = async ({ pregunta, clienteId, topK }) => {
   if (!response.ok) throw new Error('Error al consultar documentos');
   return response.json();
 };
+
+export const queryRagSnippets = async ({ query, clienteId, contratoId, clauseType, limit }) => {
+  const response = await fetch(`${API_URL}/rag/snippets`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      query,
+      limit: limit || 3,
+      cliente_id: clienteId || null,
+      contrato_id: contratoId || null,
+      clause_type: clauseType || null
+    })
+  });
+  if (!response.ok) throw new Error('Error al consultar fragmentos');
+  return response.json();
+};

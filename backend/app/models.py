@@ -14,6 +14,9 @@ class Cliente(Base):
     telefono = Column(String)
 
     contratos = relationship("Contrato", back_populates="cliente", cascade="all, delete-orphan")
+    proyecciones_financieras = relationship(
+        "ProyeccionFinanciera", back_populates="cliente", cascade="all, delete-orphan"
+    )
 
 
 class Contrato(Base):
@@ -81,3 +84,17 @@ class ContratoDocumento(Base):
     fecha_indexado = Column(DateTime, default=datetime.utcnow, nullable=False)
 
     contrato = relationship("Contrato", back_populates="documentos")
+
+
+class ProyeccionFinanciera(Base):
+    __tablename__ = "proyecciones_financieras"
+
+    id = Column(Integer, primary_key=True, index=True)
+    cliente_id = Column(Integer, ForeignKey("clientes.id"), nullable=False)
+    anio = Column(Integer, nullable=False)
+    ingreso_estimado = Column(Float, nullable=False)
+    costo_estimado = Column(Float, nullable=False)
+    margen_estimado = Column(Float, nullable=False)
+    creado_en = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    cliente = relationship("Cliente", back_populates="proyecciones_financieras")

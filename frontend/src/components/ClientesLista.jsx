@@ -5,6 +5,8 @@ import {
   CircularProgress,
   IconButton,
   InputAdornment,
+  Switch,
+  FormControlLabel,
   Table,
   TableBody,
   TableCell,
@@ -22,8 +24,10 @@ import PersonOutlineIcon from '@mui/icons-material/PersonOutline';
 import PhoneOutlinedIcon from '@mui/icons-material/PhoneOutlined';
 import BadgeOutlinedIcon from '@mui/icons-material/BadgeOutlined';
 import { getClientes, deleteCliente, createCliente } from '../services/clienteService';
+import { queryRagSnippets } from '../services/ragService';
 import LoadingState from './LoadingState';
 import ConfirmDialog from './ConfirmDialog';
+import ClienteSelect from './ClienteSelect';
 import { useToast } from './toastContext';
 
 const ClientesLista = () => {
@@ -48,6 +52,14 @@ const ClientesLista = () => {
     rfc: '',
     email: ''
   });
+  const [ragClienteId, setRagClienteId] = useState('');
+  const [ragContratoId, setRagContratoId] = useState('');
+  const [ragClauseType, setRagClauseType] = useState('');
+  const [ragQuery, setRagQuery] = useState('');
+  const [ragSnippets, setRagSnippets] = useState([]);
+  const [ragLoading, setRagLoading] = useState(false);
+  const [ragError, setRagError] = useState('');
+  const [postProcess, setPostProcess] = useState(false);
   const { pushToast } = useToast();
 
   const loadClientes = useCallback(async () => {
@@ -136,6 +148,32 @@ const ClientesLista = () => {
     } finally {
       setConfirmId(null);
       setDeleting(false);
+    }
+  };
+
+  const handleRagSearch = async () => {
+    if (!ragQuery.trim()) {
+      setRagError('Ingresa una consulta para buscar fragmentos.');
+      return;
+    }
+    setRagLoading(true);
+    setRagError('');
+    try {
+      const data = await queryRagSnippets({
+        query: ragQuery,
+        clienteId: ragClienteId || undefined,
+        contratoId: ragContratoId || undefined,
+        clauseType: ragClauseType || undefined,
+        limit: 3
+      });
+      setRagSnippets(data.fragments || []);
+      pushToast('Fragmentos cargados.', 'success');
+    } catch (ragErr) {
+      console.error(ragErr);
+      setRagError('No se pudieron obtener fragmentos.');
+      pushToast('No se pudieron obtener fragmentos.', 'error');
+    } finally {
+      setRagLoading(false);
     }
   };
 
@@ -327,6 +365,136 @@ const ClientesLista = () => {
         onConfirm={handleDelete}
         loading={deleting}
       />
+
+      <section className="clientes__rag">
+        <Typography variant="h5" component="h2">
+          Cliente 360° · Fragmentos destacados
+        </Typography>
+        <div className="rag__filters">
+          <label>
+            Cliente
+            <ClienteSelect
+              value={ragClienteId}
+              onChange={(event) => setRagClienteId(event.target.value)}
+              includeAll
+              allLabel="Todos"
+            />
+          </label>
+          <label>
+            Contrato (opcional)
+            <TextField
+              value={ragContratoId}
+              onChange={(event) => setRagContratoId(event.target.value)}
+              placeholder="Ej. 12"
+              aria-label="Contrato"
+            />
+          </label>
+          <label>
+            Tipo de cláusula (opcional)
+            <TextField
+              value={ragClauseType}
+              onChange={(event) => setRagClauseType(event.target.value)}
+              placeholder="Ej. penalización"
+              aria-label="Tipo de cláusula"
+            />
+          </label>
+          <label className="rag__full">
+            Consulta
+            <TextField
+              rows={2}
+              multiline
+              value={ragQuery}
+              onChange={(event) => setRagQuery(event.target.value)}
+              placeholder="Ej. vigencia del contrato, monto total, penalización"
+              aria-label="Consulta"
+            />
+          </label>
+        </div>
+        <div className="rag__actions">
+          <Button type="button" variant="contained" onClick={handleRagSearch} disabled={ragLoading}>
+            {ragLoading ? 'Buscando...' : 'Buscar fragmentos'}
+          </Button>
+          <FormControlLabel
+            control={
+              <Switch
+                checked={postProcess}
+                onChange={(event) => setPostProcess(event.target.checked)}
+                color="primary"
+              />
+            }
+            label="Post-procesamiento inteligente (beta)"
+          />
+        </div>
+        {ragError && (
+          <Typography variant="caption" color="error">
+            {ragError}
+          </Typography>
+        )}
+        {ragSnippets.length > 0 && (
+          <div className="rag__snippets">
+            <div className="rag__snippet-grid">
+              {ragSnippets.map((snippet, index) => (
+                <article className="rag__snippet-card" key={`${snippet.document_id || index}`}> 
+                  <header>
+                    <strong>{snippet.title || 'Documento'}</strong>
+                    {snippet.score !== null && snippet.score !== undefined && (
+                      <span className="rag__snippet-score">score {snippet.score.toFixed(2)}</span>
+                    )}
+                  </header>
+                  <p>{snippet.text}</p>
+                  <div className="rag__snippet-meta">
+                    {snippet.montos?.length > 0 && (
+                      <div>
+                        <span>Montos</span>
+                        <div className="rag__chips">
+                          {snippet.montos.map((monto) => (
+                            <span key={monto} className="rag__chip">{monto}</span>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                    {snippet.fechas?.length > 0 && (
+                      <div>
+                        <span>Fechas</span>
+                        <div className="rag__chips">
+                          {snippet.fechas.map((fecha) => (
+                            <span key={fecha} className="rag__chip">{fecha}</span>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                    {snippet.porcentajes?.length > 0 && (
+                      <div>
+                        <span>Porcentajes</span>
+                        <div className="rag__chips">
+                          {snippet.porcentajes.map((porcentaje) => (
+                            <span key={porcentaje} className="rag__chip">{porcentaje}</span>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                    {snippet.clausulas?.length > 0 && (
+                      <div>
+                        <span>Cláusulas</span>
+                        <div className="rag__chips">
+                          {snippet.clausulas.map((clausula) => (
+                            <span key={clausula} className="rag__chip">{clausula}</span>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                  {postProcess && (
+                    <Typography variant="caption" color="text.secondary">
+                      Post-procesamiento inteligente activo.
+                    </Typography>
+                  )}
+                </article>
+              ))}
+            </div>
+          </div>
+        )}
+      </section>
     </div>
   );
 };

@@ -17,6 +17,8 @@ env/
 *.egg-info/
 dist/
 build/
+*.pyc
+venv/
 
 # IDE
 .vscode/

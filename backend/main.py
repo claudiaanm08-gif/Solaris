@@ -16,6 +16,7 @@ from reportlab.pdfgen import canvas
 from fastapi import File, UploadFile
 from datetime import date, datetime
 from typing import Optional
+import re
 import logging
 from PyPDF2 import PdfReader
 from ibm_watson import DiscoveryV2, ApiException
@@ -65,7 +66,12 @@ def _startup_schema_check():
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
+    allow_origins=[
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+        "http://localhost:5174",
+        "http://127.0.0.1:5174",
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -235,6 +241,26 @@ def _split_text(text: str, chunk_size: int = 800, overlap: int = 120):
             break
         start = max(end - overlap, 0)
     return chunks
+
+
+def _extract_structured_fields(text: str) -> dict:
+    if not text:
+        return {"montos": [], "fechas": [], "porcentajes": [], "clausulas": []}
+
+    montos = re.findall(r"\$\s?\d{1,3}(?:,\d{3})*(?:\.\d+)?", text)
+    porcentajes = re.findall(r"\b\d{1,3}(?:\.\d+)?%", text)
+    fechas = re.findall(
+        r"\b\d{1,2}\s+de\s+[A-Za-zÁÉÍÓÚáéíóúñÑ]+\s+de\s+\d{4}\b",
+        text,
+    )
+    clausulas = re.findall(r"\bCLÁUSULA\s+[A-ZÁÉÍÓÚÑ]+\b", text, flags=re.IGNORECASE)
+
+    return {
+        "montos": list(dict.fromkeys(montos))[:5],
+        "fechas": list(dict.fromkeys(fechas))[:5],
+        "porcentajes": list(dict.fromkeys(porcentajes))[:5],
+        "clausulas": list(dict.fromkeys(clausulas))[:5],
+    }
 
 
 def _index_contrato_pdf(db: Session, contrato: models.Contrato):
@@ -883,9 +909,74 @@ def rag_query(request: schemas.RagQueryRequest, db: Session = Depends(get_db)):
     }
 
 
+@app.post("/rag/snippets", response_model=schemas.RagSnippetResponse)
+def rag_snippets(request: schemas.RagSnippetRequest):
+    return api_rag_snippets(request=request)
+
+
 @api_router.post("/rag/query", response_model=schemas.RagQueryResponse)
 def api_rag_query(request: schemas.RagQueryRequest, db: Session = Depends(get_db)):
     return rag_query(request=request, db=db)
+
+
+@api_router.post("/rag/snippets", response_model=schemas.RagSnippetResponse)
+def api_rag_snippets(request: schemas.RagSnippetRequest):
+    if not request.query.strip():
+        raise HTTPException(status_code=400, detail="La consulta es obligatoria")
+    discovery_client = _get_discovery_client()
+    if not discovery_client:
+        raise HTTPException(status_code=503, detail="Watson Discovery no configurado")
+
+    filter_expr = None
+    if request.cliente_id:
+        filter_expr = f"metadata.cliente_id:{request.cliente_id}"
+    if request.contrato_id:
+        clause = f"metadata.contrato_id:{request.contrato_id}"
+        filter_expr = clause if not filter_expr else f"{filter_expr}, {clause}"
+    if request.clause_type:
+        clause = f"metadata.tipo_clausula:{request.clause_type}"
+        filter_expr = clause if not filter_expr else f"{filter_expr}, {clause}"
+
+    try:
+        response = discovery_client.query(
+            project_id=WATSON_DISCOVERY_PROJECT_ID,
+            collection_id=WATSON_DISCOVERY_COLLECTION_ID,
+            natural_language_query=request.query,
+            filter=filter_expr,
+            count=max(request.limit, 1),
+        ).get_result()
+    except ApiException as exc:
+        logger.exception("Error en consulta Watson Discovery: %s", exc)
+        raise HTTPException(status_code=502, detail="Error en Watson Discovery")
+
+    fragments = []
+    for result in response.get("results", [])[: request.limit]:
+        text = result.get("text") or result.get("extracted_text") or ""
+        if isinstance(text, list):
+            text = " ".join(str(item) for item in text)
+        if not isinstance(text, str):
+            text = str(text)
+
+        structured = _extract_structured_fields(text)
+
+        fragments.append(
+            {
+                "document_id": result.get("document_id"),
+                "title": result.get("title"),
+                "score": result.get("result_metadata", {}).get("score"),
+                "text": text.strip()[:1200],
+                "montos": structured["montos"],
+                "fechas": structured["fechas"],
+                "porcentajes": structured["porcentajes"],
+                "clausulas": structured["clausulas"],
+            }
+        )
+
+    return {
+        "query": request.query,
+        "matching_results": response.get("matching_results", 0),
+        "fragments": fragments,
+    }
 
 
 @app.post("/simulaciones/ahorro", response_model=schemas.SimulacionAhorroResponse)
