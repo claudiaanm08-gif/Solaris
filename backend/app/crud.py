@@ -1,7 +1,9 @@
 from sqlalchemy.orm import Session
 from sqlalchemy import func
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 from . import models, schemas
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.metrics.pairwise import cosine_similarity
 
 # Obtener cliente por ID
 def get_cliente(db: Session, cliente_id: int):
@@ -238,4 +240,191 @@ def get_consumo_trend_by_cliente(db: Session, cliente_id: int, fecha_inicio=None
         "cliente_id": cliente.id,
         "cliente_nombre": cliente.nombre,
         "puntos": puntos,
+    }
+
+
+def _normalize_period(fecha_inicio: date | None, fecha_fin: date | None):
+    today = datetime.utcnow().date()
+    if not fecha_fin:
+        fecha_fin = today
+    if not fecha_inicio:
+        fecha_inicio = fecha_fin - timedelta(days=30)
+    if fecha_inicio > fecha_fin:
+        fecha_inicio, fecha_fin = fecha_fin, fecha_inicio
+    return fecha_inicio, fecha_fin
+
+
+def _compute_proyeccion_for_cliente(db: Session, cliente, fecha_inicio: date, fecha_fin: date):
+    consumos_query = (
+        db.query(func.coalesce(func.sum(models.Consumo.volumen_consumido), 0))
+        .join(models.Contrato)
+        .filter(models.Contrato.cliente_id == cliente.id)
+    )
+    consumos_query = _apply_date_filter(consumos_query, models.Consumo.fecha_consumo, fecha_inicio, fecha_fin)
+    total_consumo = float(consumos_query.scalar() or 0)
+
+    entregas_query = (
+        db.query(func.coalesce(func.sum(models.Entrega.volumen_entregado), 0))
+        .join(models.Contrato)
+        .filter(models.Contrato.cliente_id == cliente.id)
+    )
+    entregas_query = _apply_date_filter(entregas_query, models.Entrega.fecha_entrega, fecha_inicio, fecha_fin)
+    total_entregado = float(entregas_query.scalar() or 0)
+
+    days = (fecha_fin - fecha_inicio).days + 1
+    consumo_promedio_diario = total_consumo / days if days > 0 else 0
+    almacenamiento_estimado = total_entregado - total_consumo
+
+    dias_para_reabastecimiento = None
+    fecha_reabastecimiento = None
+    if consumo_promedio_diario > 0:
+        dias_para_reabastecimiento = max(almacenamiento_estimado / consumo_promedio_diario, 0)
+        fecha_reabastecimiento = datetime.utcnow().date() + timedelta(days=dias_para_reabastecimiento)
+
+    return {
+        "cliente_id": cliente.id,
+        "cliente_nombre": cliente.nombre,
+        "periodo_inicio": fecha_inicio,
+        "periodo_fin": fecha_fin,
+        "consumo_promedio_diario": consumo_promedio_diario,
+        "almacenamiento_estimado": almacenamiento_estimado,
+        "dias_para_reabastecimiento": dias_para_reabastecimiento,
+        "fecha_reabastecimiento_estimada": fecha_reabastecimiento,
+    }
+
+
+def get_proyecciones_reabastecimiento(db: Session, cliente_id=None, fecha_inicio=None, fecha_fin=None):
+    fecha_inicio, fecha_fin = _normalize_period(fecha_inicio, fecha_fin)
+    clientes_query = db.query(models.Cliente)
+    if cliente_id:
+        clientes_query = clientes_query.filter(models.Cliente.id == cliente_id)
+    clientes = clientes_query.all()
+
+    return [_compute_proyeccion_for_cliente(db, cliente, fecha_inicio, fecha_fin) for cliente in clientes]
+
+
+def replace_contrato_documentos(db: Session, contrato_id: int, chunks: list[str]):
+    db.query(models.ContratoDocumento).filter(models.ContratoDocumento.contrato_id == contrato_id).delete()
+    documentos = [
+        models.ContratoDocumento(
+            contrato_id=contrato_id,
+            chunk_index=index,
+            contenido=chunk,
+        )
+        for index, chunk in enumerate(chunks)
+    ]
+    if documentos:
+        db.add_all(documentos)
+    db.commit()
+    return len(documentos)
+
+
+def get_rag_documentos(db: Session, cliente_id: int | None = None):
+    query = (
+        db.query(models.ContratoDocumento, models.Contrato, models.Cliente)
+        .join(models.Contrato, models.Contrato.id == models.ContratoDocumento.contrato_id)
+        .join(models.Cliente, models.Cliente.id == models.Contrato.cliente_id)
+    )
+    if cliente_id:
+        query = query.filter(models.Cliente.id == cliente_id)
+    return query.all()
+
+
+def query_rag(db: Session, pregunta: str, cliente_id: int | None = None, top_k: int = 3):
+    documentos = get_rag_documentos(db, cliente_id=cliente_id)
+    if not documentos:
+        return {
+            "respuesta": "No hay documentos indexados para responder la consulta.",
+            "fuentes": [],
+        }
+
+    corpus = [doc.contenido for doc, _, _ in documentos]
+    vectorizer = TfidfVectorizer()
+    matriz = vectorizer.fit_transform(corpus + [pregunta])
+    similitudes = cosine_similarity(matriz[-1], matriz[:-1]).flatten()
+    top_indices = similitudes.argsort()[::-1][: max(top_k, 1)]
+
+    fuentes = []
+    for idx in top_indices:
+        doc, contrato, cliente = documentos[idx]
+        score = float(similitudes[idx])
+        fragmento = doc.contenido[:240].strip().replace("\n", " ")
+        fuentes.append(
+            {
+                "contrato_id": contrato.id,
+                "cliente_nombre": cliente.nombre,
+                "score": score,
+                "fragmento": fragmento,
+            }
+        )
+
+    resumen = " ".join(f["fragmento"] for f in fuentes if f["fragmento"]).strip()
+    respuesta = resumen or "No se encontró información relevante en los contratos indexados."
+
+    return {
+        "respuesta": respuesta,
+        "fuentes": fuentes,
+    }
+
+
+def _sum_consumo_by_cliente(db: Session, cliente_id: int, fecha_inicio=None, fecha_fin=None):
+    consumos_query = (
+        db.query(func.coalesce(func.sum(models.Consumo.volumen_consumido), 0))
+        .join(models.Contrato)
+        .filter(models.Contrato.cliente_id == cliente_id)
+    )
+    consumos_query = _apply_date_filter(consumos_query, models.Consumo.fecha_consumo, fecha_inicio, fecha_fin)
+    return float(consumos_query.scalar() or 0)
+
+
+def _sum_entregas_by_cliente(db: Session, cliente_id: int, fecha_inicio=None, fecha_fin=None):
+    entregas_query = (
+        db.query(func.coalesce(func.sum(models.Entrega.volumen_entregado), 0))
+        .join(models.Contrato)
+        .filter(models.Contrato.cliente_id == cliente_id)
+    )
+    entregas_query = _apply_date_filter(entregas_query, models.Entrega.fecha_entrega, fecha_inicio, fecha_fin)
+    return float(entregas_query.scalar() or 0)
+
+
+def compute_simulacion_ahorro(db: Session, request: schemas.SimulacionAhorroRequest):
+    cliente = get_cliente(db, request.cliente_id)
+    if not cliente:
+        return None
+
+    fecha_inicio, fecha_fin = _normalize_period(request.fecha_inicio, request.fecha_fin)
+    volumen = _sum_consumo_by_cliente(db, cliente.id, fecha_inicio, fecha_fin)
+    fuente = "consumo"
+
+    if volumen == 0:
+        volumen_entregado = _sum_entregas_by_cliente(db, cliente.id, fecha_inicio, fecha_fin)
+        if volumen_entregado > 0:
+            volumen = volumen_entregado
+            fuente = "entregas"
+
+    if volumen == 0 and request.volumen_estimado:
+        volumen = float(request.volumen_estimado)
+        fuente = "estimado"
+
+    if volumen == 0:
+        fuente = "sin_datos"
+
+    costo_solensa = volumen * request.precio_solensa
+    costo_alternativo = volumen * request.precio_alternativo
+    ahorro = costo_alternativo - costo_solensa
+    porcentaje = (ahorro / costo_alternativo * 100) if costo_alternativo else 0
+
+    return {
+        "cliente_id": cliente.id,
+        "cliente_nombre": cliente.nombre,
+        "periodo_inicio": fecha_inicio,
+        "periodo_fin": fecha_fin,
+        "volumen_base": volumen,
+        "fuente_volumen": fuente,
+        "precio_solensa": request.precio_solensa,
+        "precio_alternativo": request.precio_alternativo,
+        "costo_solensa": costo_solensa,
+        "costo_alternativo": costo_alternativo,
+        "ahorro_estimado": ahorro,
+        "porcentaje_ahorro": porcentaje,
     }

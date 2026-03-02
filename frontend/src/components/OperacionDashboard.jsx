@@ -1,7 +1,22 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { getClientes } from '../services/clienteService';
+import {
+  Area,
+  AreaChart,
+  CartesianGrid,
+  Line,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis
+} from 'recharts';
+import { Grow, InputAdornment, TextField } from '@mui/material';
+import CalendarTodayOutlinedIcon from '@mui/icons-material/CalendarTodayOutlined';
+import TuneOutlinedIcon from '@mui/icons-material/TuneOutlined';
 import { exportDashboardKpis, getDashboardKpis, getDashboardTrend } from '../services/dashboardService';
 import { createAlerta, getAlertas } from '../services/alertaService';
+import ClienteSelect from './ClienteSelect';
+import AlertBanner from './AlertBanner';
+import LoadingState from './LoadingState';
 
 const nivelConfig = {
   verde: { label: 'Sin riesgo', className: 'badge badge--green' },
@@ -13,7 +28,6 @@ const buildAlertMessage = (kpi) =>
   `Almacenamiento estimado ${kpi.almacenamiento_estimado.toFixed(2)} (cliente ${kpi.cliente_nombre}).`;
 
 const OperacionDashboard = () => {
-  const [clientes, setClientes] = useState([]);
   const [clienteId, setClienteId] = useState('');
   const [fechaInicio, setFechaInicio] = useState('');
   const [fechaFin, setFechaFin] = useState('');
@@ -25,10 +39,11 @@ const OperacionDashboard = () => {
   const [trend, setTrend] = useState([]);
   const [trendError, setTrendError] = useState('');
   const [autoAlerts, setAutoAlerts] = useState(true);
-
-  useEffect(() => {
-    getClientes().then(setClientes).catch(() => setClientes([]));
-  }, []);
+  const activeFilterCount = useMemo(
+    () => [clienteId, fechaInicio, fechaFin].filter(Boolean).length,
+    [clienteId, fechaInicio, fechaFin]
+  );
+  const hasActiveFilters = activeFilterCount > 0;
 
   const fetchKpis = useCallback(async () => {
     setLoading(true);
@@ -82,25 +97,10 @@ const OperacionDashboard = () => {
     fetchTrend();
   }, [fetchKpis, fetchAlertas, fetchTrend]);
 
-  const trendPath = useMemo(() => {
-    if (trend.length < 2) return '';
-    const width = 640;
-    const height = 160;
-    const padding = 20;
-    const values = trend.map((point) => point.volumen_consumido);
-    const maxValue = Math.max(...values, 1);
-    const minValue = Math.min(...values, 0);
-    const range = maxValue - minValue || 1;
-    const xStep = (width - padding * 2) / (trend.length - 1);
-
-    return trend
-      .map((point, index) => {
-        const x = padding + index * xStep;
-        const y = padding + (height - padding * 2) * (1 - (point.volumen_consumido - minValue) / range);
-        return `${index === 0 ? 'M' : 'L'}${x},${y}`;
-      })
-      .join(' ');
-  }, [trend]);
+  const trendData = useMemo(
+    () => trend.map((point) => ({ fecha: point.fecha, volumen: point.volumen_consumido })),
+    [trend]
+  );
 
   const kpiRiesgo = useMemo(() => {
     return kpis.map((kpi) => {
@@ -189,9 +189,15 @@ const OperacionDashboard = () => {
     }
   };
 
+  const handleClearFilters = () => {
+    setClienteId('');
+    setFechaInicio('');
+    setFechaFin('');
+  };
+
   return (
-    <section className="dashboard">
-      <header className="dashboard__header">
+  <section className="dashboard space-y-6">
+  <header className="dashboard__header flex flex-wrap gap-6">
         <div>
           <h2>Dashboard operativo</h2>
           <p>KPIs y alertas de riesgo por cliente.</p>
@@ -205,82 +211,148 @@ const OperacionDashboard = () => {
             />
             Alertas automáticas
           </label>
+          {hasActiveFilters && (
+            <span className="dashboard__filters-indicator">
+              Filtros activos: {activeFilterCount}
+            </span>
+          )}
           <button type="button" onClick={handleExport}>
             Exportar KPIs
           </button>
         </div>
       </header>
 
-      <div className="dashboard__filters">
+  <div className="dashboard__filters gap-6">
         <label>
           Cliente
-          <select value={clienteId} onChange={(event) => setClienteId(event.target.value)}>
-            <option value="">Todos</option>
-            {clientes.map((cliente) => (
-              <option key={cliente.id} value={cliente.id}>
-                {cliente.nombre}
-              </option>
-            ))}
-          </select>
+          <ClienteSelect
+            value={clienteId}
+            onChange={(event) => setClienteId(event.target.value)}
+            includeAll
+            allLabel="Todos"
+          />
         </label>
         <label>
           Fecha inicio
-          <input type="date" value={fechaInicio} onChange={(event) => setFechaInicio(event.target.value)} />
+          <TextField
+            type="date"
+            value={fechaInicio}
+            onChange={(event) => setFechaInicio(event.target.value)}
+            aria-label="Fecha inicio"
+            InputLabelProps={{ shrink: true }}
+            InputProps={{
+              startAdornment: (
+                <InputAdornment position="start">
+                  <CalendarTodayOutlinedIcon fontSize="small" />
+                </InputAdornment>
+              )
+            }}
+          />
         </label>
         <label>
           Fecha fin
-          <input type="date" value={fechaFin} onChange={(event) => setFechaFin(event.target.value)} />
+          <TextField
+            type="date"
+            value={fechaFin}
+            onChange={(event) => setFechaFin(event.target.value)}
+            aria-label="Fecha fin"
+            InputLabelProps={{ shrink: true }}
+            InputProps={{
+              startAdornment: (
+                <InputAdornment position="start">
+                  <CalendarTodayOutlinedIcon fontSize="small" />
+                </InputAdornment>
+              )
+            }}
+          />
         </label>
         <label>
           Umbral amarillo
-          <input
+          <TextField
             type="number"
             value={thresholds.amarillo}
             onChange={(event) => setThresholds((prev) => ({ ...prev, amarillo: Number(event.target.value) }))}
+            aria-label="Umbral amarillo"
+            InputProps={{
+              startAdornment: (
+                <InputAdornment position="start">
+                  <TuneOutlinedIcon fontSize="small" />
+                </InputAdornment>
+              )
+            }}
           />
         </label>
         <label>
           Umbral rojo
-          <input
+          <TextField
             type="number"
             value={thresholds.rojo}
             onChange={(event) => setThresholds((prev) => ({ ...prev, rojo: Number(event.target.value) }))}
+            aria-label="Umbral rojo"
+            InputProps={{
+              startAdornment: (
+                <InputAdornment position="start">
+                  <TuneOutlinedIcon fontSize="small" />
+                </InputAdornment>
+              )
+            }}
           />
         </label>
+        <button
+          type="button"
+          className="dashboard__clear"
+          onClick={handleClearFilters}
+          disabled={!hasActiveFilters}
+        >
+          Limpiar filtros
+        </button>
       </div>
 
       <div className="dashboard__trend">
         <h3>Tendencia de consumo</h3>
         {!clienteId && <p>Selecciona un cliente para ver su tendencia.</p>}
-        {trendError && <p className="dashboard__error">{trendError}</p>}
+  <AlertBanner severity="error">{trendError}</AlertBanner>
         {clienteId && trend.length === 0 && !trendError && <p>Sin datos de consumo para este periodo.</p>}
         {trend.length > 0 && (
           <div className="dashboard__trend-chart">
-            <svg viewBox="0 0 640 160" role="img" aria-label="Tendencia de consumo">
-              <path d={trendPath} fill="none" stroke="#2563eb" strokeWidth="3" />
-              {trend.map((point, index) => {
-                const xStep = (640 - 40) / (trend.length - 1 || 1);
-                const x = 20 + index * xStep;
-                const values = trend.map((p) => p.volumen_consumido);
-                const maxValue = Math.max(...values, 1);
-                const minValue = Math.min(...values, 0);
-                const range = maxValue - minValue || 1;
-                const y = 20 + (160 - 40) * (1 - (point.volumen_consumido - minValue) / range);
-                return <circle key={point.fecha} cx={x} cy={y} r="4" fill="#1d4ed8" />;
-              })}
-            </svg>
-            <div className="dashboard__trend-legend">
-              {trend.map((point) => (
-                <span key={point.fecha}>
-                  {point.fecha}: {point.volumen_consumido.toFixed(2)}
-                </span>
-              ))}
-            </div>
+            <ResponsiveContainer width="100%" height={220}>
+              <AreaChart data={trendData} margin={{ top: 10, right: 20, left: 0, bottom: 10 }}>
+                <defs>
+                  <linearGradient id="trendGradient" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="5%" stopColor="#4f46e5" stopOpacity={0.3} />
+                    <stop offset="95%" stopColor="#4f46e5" stopOpacity={0} />
+                  </linearGradient>
+                </defs>
+                <CartesianGrid strokeDasharray="4 4" />
+                <XAxis dataKey="fecha" />
+                <YAxis />
+                <Tooltip
+                  formatter={(value) => Number(value).toFixed(2)}
+                  contentStyle={{
+                    background: '#fff',
+                    borderRadius: 12,
+                    border: '1px solid rgba(148, 163, 184, 0.3)',
+                    boxShadow: '0 10px 25px -10px rgba(15, 23, 42, 0.2)'
+                  }}
+                  labelStyle={{ color: '#111827', fontWeight: 600 }}
+                />
+                <Area
+                  type="monotone"
+                  dataKey="volumen"
+                  stroke="#4f46e5"
+                  strokeWidth={3}
+                  fill="url(#trendGradient)"
+                  dot={{ r: 4 }}
+                  activeDot={{ r: 6 }}
+                />
+                <Line type="monotone" dataKey="volumen" stroke="#4f46e5" strokeWidth={3} dot={false} />
+              </AreaChart>
+            </ResponsiveContainer>
           </div>
         )}
       </div>
 
-      {error && <p className="dashboard__error">{error}</p>}
+  <AlertBanner severity="error">{error}</AlertBanner>
 
       {!loading && kpiRiesgo.length === 0 && !error && (
         <div className="dashboard__empty">
@@ -290,7 +362,7 @@ const OperacionDashboard = () => {
       )}
 
       {loading ? (
-        <p>Cargando KPIs...</p>
+        <LoadingState variant="kpi-cards" />
       ) : (
         <>
           <div className="dashboard__summary">
@@ -320,21 +392,23 @@ const OperacionDashboard = () => {
             {kpiRiesgo.map((kpi) => {
               const config = nivelConfig[kpi.nivel];
               return (
-                <article key={kpi.cliente_id} className="dashboard__card">
-                  <div className="dashboard__card-header">
-                    <h3>{kpi.cliente_nombre}</h3>
-                    <span className={config.className}>{config.label}</span>
-                  </div>
-                  <ul>
-                    <li>Volumen contratado: {kpi.volumen_contratado.toFixed(2)}</li>
-                    <li>Volumen entregado: {kpi.volumen_entregado.toFixed(2)}</li>
-                    <li>Volumen consumido: {kpi.volumen_consumido.toFixed(2)}</li>
-                    <li>
-                      Almacenamiento estimado: <strong>{kpi.almacenamiento_estimado.toFixed(2)}</strong>
-                    </li>
-                    <li>Margen estimado: {kpi.margen_estimado.toFixed(2)}</li>
-                  </ul>
-                </article>
+                <Grow in timeout={250} key={kpi.cliente_id}>
+                  <article className="dashboard__card transition-all duration-200">
+                    <div className="dashboard__card-header">
+                      <h3>{kpi.cliente_nombre}</h3>
+                      <span className={config.className}>{config.label}</span>
+                    </div>
+                    <ul>
+                      <li>Volumen contratado: {kpi.volumen_contratado.toFixed(2)}</li>
+                      <li>Volumen entregado: {kpi.volumen_entregado.toFixed(2)}</li>
+                      <li>Volumen consumido: {kpi.volumen_consumido.toFixed(2)}</li>
+                      <li>
+                        Almacenamiento estimado: <strong>{kpi.almacenamiento_estimado.toFixed(2)}</strong>
+                      </li>
+                      <li>Margen estimado: {kpi.margen_estimado.toFixed(2)}</li>
+                    </ul>
+                  </article>
+                </Grow>
               );
             })}
           </div>

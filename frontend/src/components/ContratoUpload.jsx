@@ -1,13 +1,18 @@
-import { useEffect, useState } from 'react';
-import { getClientes } from '../services/clienteService';
+import { useState } from 'react';
+import { Button, InputAdornment, TextField } from '@mui/material';
+import EventOutlinedIcon from '@mui/icons-material/EventOutlined';
+import DescriptionOutlinedIcon from '@mui/icons-material/DescriptionOutlined';
+import NumbersOutlinedIcon from '@mui/icons-material/NumbersOutlined';
+import UploadFileOutlinedIcon from '@mui/icons-material/UploadFileOutlined';
 import { createContrato } from '../services/contratoService';
+import ClienteSelect from './ClienteSelect';
+import { useToast } from './toastContext';
 
 const ContratoUpload = () => {
-  const [clientes, setClientes] = useState([]);
-  const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
+  const { pushToast } = useToast();
   const [formData, setFormData] = useState({
     cliente_id: '',
     volumen_contratado: '',
@@ -16,22 +21,6 @@ const ContratoUpload = () => {
     condiciones: '',
     archivo: null
   });
-
-  useEffect(() => {
-    const fetchClientes = async () => {
-      try {
-        const data = await getClientes();
-        setClientes(data);
-      } catch (err) {
-        console.error(err);
-        setError('No se pudieron cargar los clientes.');
-      } finally {
-        setLoading(false);
-      }
-    };
-
-    fetchClientes();
-  }, []);
 
   const handleChange = (event) => {
     const { name, value } = event.target;
@@ -66,6 +55,7 @@ const ContratoUpload = () => {
 
       await createContrato(payload);
       setSuccess('Contrato registrado correctamente.');
+      pushToast('Contrato registrado correctamente.', 'success');
       setFormData({
         cliente_id: '',
         volumen_contratado: '',
@@ -77,69 +67,140 @@ const ContratoUpload = () => {
     } catch (err) {
       console.error(err);
       setError('No se pudo subir el contrato.');
+      pushToast('No se pudo subir el contrato.', 'error');
     } finally {
       setSaving(false);
     }
   };
 
-  if (loading) return <div>Cargando clientes...</div>;
-
   return (
-    <section className="contract-upload">
+  <section className="contract-upload space-y-6">
       <h2>Subir contrato PDF</h2>
       <p>Adjunta el PDF y completa los datos operativos del contrato.</p>
 
-      <form onSubmit={handleSubmit} className="contract-upload__form">
+  <form onSubmit={handleSubmit} className="contract-upload__form gap-6">
         <label>
           Cliente
-          <select name="cliente_id" value={formData.cliente_id} onChange={handleChange} required>
-            <option value="">Selecciona un cliente</option>
-            {clientes.map((cliente) => (
-              <option key={cliente.id} value={cliente.id}>
-                {cliente.nombre}
-              </option>
-            ))}
-          </select>
-        </label>
-
-        <label>
-          Volumen contratado
-          <input
-            name="volumen_contratado"
-            type="number"
-            step="0.01"
-            value={formData.volumen_contratado}
+          <ClienteSelect
+            name="cliente_id"
+            value={formData.cliente_id}
             onChange={handleChange}
             required
           />
         </label>
 
         <label>
+          Volumen contratado
+          <TextField
+            name="volumen_contratado"
+            type="number"
+            step="0.01"
+            value={formData.volumen_contratado}
+            onChange={handleChange}
+            required
+            aria-label="Volumen contratado"
+            InputProps={{
+              startAdornment: (
+                <InputAdornment position="start">
+                  <NumbersOutlinedIcon fontSize="small" />
+                </InputAdornment>
+              )
+            }}
+          />
+        </label>
+
+        <label>
           Fecha inicio
-          <input name="fecha_inicio" type="date" value={formData.fecha_inicio} onChange={handleChange} required />
+          <TextField
+            name="fecha_inicio"
+            type="date"
+            value={formData.fecha_inicio}
+            onChange={handleChange}
+            required
+            aria-label="Fecha inicio"
+            InputLabelProps={{ shrink: true }}
+            InputProps={{
+              startAdornment: (
+                <InputAdornment position="start">
+                  <EventOutlinedIcon fontSize="small" />
+                </InputAdornment>
+              )
+            }}
+          />
         </label>
 
         <label>
           Fecha fin
-          <input name="fecha_fin" type="date" value={formData.fecha_fin} onChange={handleChange} required />
+          <TextField
+            name="fecha_fin"
+            type="date"
+            value={formData.fecha_fin}
+            onChange={handleChange}
+            required
+            aria-label="Fecha fin"
+            InputLabelProps={{ shrink: true }}
+            InputProps={{
+              startAdornment: (
+                <InputAdornment position="start">
+                  <EventOutlinedIcon fontSize="small" />
+                </InputAdornment>
+              )
+            }}
+          />
         </label>
 
         <label className="contract-upload__full">
           Condiciones
-          <textarea name="condiciones" value={formData.condiciones} onChange={handleChange} rows="3" />
+          <TextField
+            name="condiciones"
+            value={formData.condiciones}
+            onChange={handleChange}
+            rows={3}
+            multiline
+            aria-label="Condiciones"
+            InputProps={{
+              startAdornment: (
+                <InputAdornment position="start">
+                  <DescriptionOutlinedIcon fontSize="small" />
+                </InputAdornment>
+              )
+            }}
+          />
         </label>
 
         <label className="contract-upload__full">
           Archivo PDF
-          <input name="archivo" type="file" accept="application/pdf" onChange={handleFileChange} required />
+          <TextField
+            name="archivo"
+            type="file"
+            inputProps={{ accept: 'application/pdf' }}
+            onChange={handleFileChange}
+            required
+            aria-label="Archivo PDF"
+            InputProps={{
+              startAdornment: (
+                <InputAdornment position="start">
+                  <UploadFileOutlinedIcon fontSize="small" />
+                </InputAdornment>
+              )
+            }}
+          />
         </label>
 
-        {error && <p className="contract-upload__error">{error}</p>}
-        {success && <p className="contract-upload__success">{success}</p>}
+        {error && (
+          <span className="form__helper form__helper--error" role="alert">
+            {error}
+          </span>
+        )}
+        {success && (
+          <span className="form__helper" role="status">
+            {success}
+          </span>
+        )}
 
-        <button type="submit" disabled={saving}>
+        <Button type="submit" variant="contained" disabled={saving} aria-label="Subir contrato">
           {saving ? 'Subiendo...' : 'Subir contrato'}
-        </button>
+        </Button>
       </form>
     </section>
   );

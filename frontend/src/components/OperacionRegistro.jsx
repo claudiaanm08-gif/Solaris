@@ -1,11 +1,18 @@
 import { useEffect, useState } from 'react';
-import { getClientes } from '../services/clienteService';
+import { Button, InputAdornment, TextField } from '@mui/material';
+import CalendarTodayOutlinedIcon from '@mui/icons-material/CalendarTodayOutlined';
+import LocalShippingOutlinedIcon from '@mui/icons-material/LocalShippingOutlined';
+import WaterDropOutlinedIcon from '@mui/icons-material/WaterDropOutlined';
+import AttachMoneyOutlinedIcon from '@mui/icons-material/AttachMoneyOutlined';
+import NotesOutlinedIcon from '@mui/icons-material/NotesOutlined';
 import { getContratosByCliente } from '../services/contratoService';
 import { createEntrega } from '../services/entregaService';
 import { createConsumo } from '../services/consumoService';
+import ClienteSelect from './ClienteSelect';
+import AlertBanner from './AlertBanner';
+import { useToast } from './toastContext';
 
 const OperacionRegistro = () => {
-  const [clientes, setClientes] = useState([]);
   const [contratos, setContratos] = useState([]);
   const [clienteId, setClienteId] = useState('');
   const [contratoId, setContratoId] = useState('');
@@ -19,27 +26,11 @@ const OperacionRegistro = () => {
     fecha_consumo: '',
     volumen_consumido: ''
   });
-  const [loading, setLoading] = useState(true);
   const [savingEntrega, setSavingEntrega] = useState(false);
   const [savingConsumo, setSavingConsumo] = useState(false);
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
-
-  useEffect(() => {
-    const fetchClientes = async () => {
-      try {
-        const data = await getClientes();
-        setClientes(data);
-      } catch (err) {
-        console.error(err);
-        setError('No se pudieron cargar los clientes.');
-      } finally {
-        setLoading(false);
-      }
-    };
-
-    fetchClientes();
-  }, []);
+  const { pushToast } = useToast();
 
   useEffect(() => {
     const fetchContratos = async () => {
@@ -89,6 +80,7 @@ const OperacionRegistro = () => {
         observaciones: entregaData.observaciones || null
       });
       setMessage('Entrega registrada correctamente.');
+  pushToast('Entrega registrada correctamente.', 'success');
       setEntregaData({
         fecha_entrega: '',
         volumen_entregado: '',
@@ -98,6 +90,7 @@ const OperacionRegistro = () => {
     } catch (err) {
       console.error(err);
       setError('No se pudo registrar la entrega.');
+      pushToast('No se pudo registrar la entrega.', 'error');
     } finally {
       setSavingEntrega(false);
     }
@@ -115,6 +108,7 @@ const OperacionRegistro = () => {
         volumen_consumido: Number(consumoData.volumen_consumido)
       });
       setMessage('Consumo registrado correctamente.');
+  pushToast('Consumo registrado correctamente.', 'success');
       setConsumoData({
         fecha_consumo: '',
         volumen_consumido: ''
@@ -122,29 +116,21 @@ const OperacionRegistro = () => {
     } catch (err) {
       console.error(err);
       setError('No se pudo registrar el consumo.');
+      pushToast('No se pudo registrar el consumo.', 'error');
     } finally {
       setSavingConsumo(false);
     }
   };
 
-  if (loading) return <div>Cargando clientes...</div>;
-
   return (
-    <section className="operacion-registro">
+  <section className="operacion-registro space-y-6">
       <h2>Registro operativo</h2>
       <p>Captura entregas y consumos para el cliente seleccionado.</p>
 
-      <div className="operacion-registro__selectors">
+  <div className="operacion-registro__selectors gap-6">
         <label>
           Cliente
-          <select value={clienteId} onChange={(event) => setClienteId(event.target.value)}>
-            <option value="">Selecciona un cliente</option>
-            {clientes.map((cliente) => (
-              <option key={cliente.id} value={cliente.id}>
-                {cliente.nombre}
-              </option>
-            ))}
-          </select>
+          <ClienteSelect value={clienteId} onChange={(event) => setClienteId(event.target.value)} />
         </label>
 
         <label>
@@ -160,26 +146,35 @@ const OperacionRegistro = () => {
         </label>
       </div>
 
-      {message && <p className="operacion-registro__success">{message}</p>}
-      {error && <p className="operacion-registro__error">{error}</p>}
+  <AlertBanner severity="success">{message}</AlertBanner>
+  <AlertBanner severity="error">{error}</AlertBanner>
 
-      <div className="operacion-registro__forms">
+  <div className="operacion-registro__forms gap-6">
         <form onSubmit={handleEntregaSubmit} className="operacion-registro__form">
           <h3>Registrar entrega</h3>
           <label>
             Fecha de entrega
-            <input
+            <TextField
               type="date"
               name="fecha_entrega"
               value={entregaData.fecha_entrega}
               onChange={handleEntregaChange}
               required
               disabled={!contratoId}
+              aria-label="Fecha de entrega"
+              InputLabelProps={{ shrink: true }}
+              InputProps={{
+                startAdornment: (
+                  <InputAdornment position="start">
+                    <CalendarTodayOutlinedIcon fontSize="small" />
+                  </InputAdornment>
+                )
+              }}
             />
           </label>
           <label>
             Volumen entregado
-            <input
+            <TextField
               type="number"
               step="0.01"
               name="volumen_entregado"
@@ -187,50 +182,84 @@ const OperacionRegistro = () => {
               onChange={handleEntregaChange}
               required
               disabled={!contratoId}
+              aria-label="Volumen entregado"
+              InputProps={{
+                startAdornment: (
+                  <InputAdornment position="start">
+                    <LocalShippingOutlinedIcon fontSize="small" />
+                  </InputAdornment>
+                )
+              }}
             />
           </label>
           <label>
             Costo logístico
-            <input
+            <TextField
               type="number"
               step="0.01"
               name="costo_logistico"
               value={entregaData.costo_logistico}
               onChange={handleEntregaChange}
               disabled={!contratoId}
+              aria-label="Costo logístico"
+              InputProps={{
+                startAdornment: (
+                  <InputAdornment position="start">
+                    <AttachMoneyOutlinedIcon fontSize="small" />
+                  </InputAdornment>
+                )
+              }}
             />
           </label>
           <label>
             Observaciones
-            <textarea
+            <TextField
               name="observaciones"
               value={entregaData.observaciones}
               onChange={handleEntregaChange}
-              rows="2"
+              rows={2}
+              multiline
               disabled={!contratoId}
+              aria-label="Observaciones"
+              InputProps={{
+                startAdornment: (
+                  <InputAdornment position="start">
+                    <NotesOutlinedIcon fontSize="small" />
+                  </InputAdornment>
+                )
+              }}
             />
           </label>
-          <button type="submit" disabled={savingEntrega || !contratoId}>
+          <Button type="submit" variant="contained" disabled={savingEntrega || !contratoId} aria-label="Registrar entrega">
             {savingEntrega ? 'Guardando...' : 'Registrar entrega'}
-          </button>
+          </Button>
         </form>
 
         <form onSubmit={handleConsumoSubmit} className="operacion-registro__form">
           <h3>Registrar consumo</h3>
           <label>
             Fecha de consumo
-            <input
+            <TextField
               type="date"
               name="fecha_consumo"
               value={consumoData.fecha_consumo}
               onChange={handleConsumoChange}
               required
               disabled={!contratoId}
+              aria-label="Fecha de consumo"
+              InputLabelProps={{ shrink: true }}
+              InputProps={{
+                startAdornment: (
+                  <InputAdornment position="start">
+                    <CalendarTodayOutlinedIcon fontSize="small" />
+                  </InputAdornment>
+                )
+              }}
             />
           </label>
           <label>
             Volumen consumido
-            <input
+            <TextField
               type="number"
               step="0.01"
               name="volumen_consumido"
@@ -238,11 +267,19 @@ const OperacionRegistro = () => {
               onChange={handleConsumoChange}
               required
               disabled={!contratoId}
+              aria-label="Volumen consumido"
+              InputProps={{
+                startAdornment: (
+                  <InputAdornment position="start">
+                    <WaterDropOutlinedIcon fontSize="small" />
+                  </InputAdornment>
+                )
+              }}
             />
           </label>
-          <button type="submit" disabled={savingConsumo || !contratoId}>
+          <Button type="submit" variant="contained" disabled={savingConsumo || !contratoId} aria-label="Registrar consumo">
             {savingConsumo ? 'Guardando...' : 'Registrar consumo'}
-          </button>
+          </Button>
         </form>
       </div>
     </section>

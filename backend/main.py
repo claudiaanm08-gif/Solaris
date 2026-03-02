@@ -2,6 +2,7 @@ from fastapi import FastAPI, Depends, HTTPException, APIRouter, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
+from sqlalchemy import inspect, text
 from app import crud, models, schemas
 from app.database import SessionLocal, engine
 
@@ -9,9 +10,16 @@ import os
 import shutil
 import csv
 import io
+import json
+from reportlab.lib.pagesizes import letter
+from reportlab.pdfgen import canvas
 from fastapi import File, UploadFile
-from datetime import date
+from datetime import date, datetime
 from typing import Optional
+import logging
+from PyPDF2 import PdfReader
+from ibm_watson import DiscoveryV2, ApiException
+from ibm_cloud_sdk_core.authenticators import IAMAuthenticator
 
 from fastapi.responses import FileResponse
 
@@ -19,8 +27,41 @@ from fastapi.responses import FileResponse
 # Crear tablas si no existen
 models.Base.metadata.create_all(bind=engine)
 
+
+def ensure_contratos_columns():
+    inspector = inspect(engine)
+    if "contratos" not in inspector.get_table_names():
+        return
+
+    existing = {col["name"] for col in inspector.get_columns("contratos")}
+    required = {
+        "archivo_pdf": "TEXT",
+        "nombre_archivo": "TEXT",
+        "fecha_subida": "DATE",
+    }
+    missing = {name: col_type for name, col_type in required.items() if name not in existing}
+    if not missing:
+        return
+
+    with engine.begin() as connection:
+        for name, col_type in missing.items():
+            connection.execute(text(f"ALTER TABLE contratos ADD COLUMN {name} {col_type}"))
+
 app = FastAPI()
 api_router = APIRouter(prefix="/api")
+
+logger = logging.getLogger("rag")
+
+WATSON_DISCOVERY_API_KEY = os.getenv("WATSON_DISCOVERY_API_KEY")
+WATSON_DISCOVERY_URL = os.getenv("WATSON_DISCOVERY_URL")
+WATSON_DISCOVERY_PROJECT_ID = os.getenv("WATSON_DISCOVERY_PROJECT_ID")
+WATSON_DISCOVERY_COLLECTION_ID = os.getenv("WATSON_DISCOVERY_COLLECTION_ID")
+_discovery_client = None
+
+
+@app.on_event("startup")
+def _startup_schema_check():
+    ensure_contratos_columns()
 
 app.add_middleware(
     CORSMiddleware,
@@ -29,6 +70,11 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.get("/")
+def root():
+    return {"status": "ok", "message": "Solaris API running"}
 
 # Dependencia para obtener sesión de BD
 def get_db():
@@ -138,7 +184,177 @@ def _crear_contrato_con_pdf(
     db.add(db_contrato)
     db.commit()
     db.refresh(db_contrato)
+    _index_contrato_pdf(db, db_contrato)
     return db_contrato
+
+
+def _extract_text_from_pdf(file_path: str):
+    try:
+        with open(file_path, "rb") as file:
+            reader = PdfReader(file)
+            pages_text = []
+            for page in reader.pages:
+                text = page.extract_text() or ""
+                pages_text.append(text)
+            return "\n".join(pages_text).strip()
+    except Exception as exc:
+        logger.exception("Error al extraer texto del PDF: %s", exc)
+        return ""
+
+
+def _get_discovery_client():
+    global _discovery_client
+    if _discovery_client is not None:
+        return _discovery_client
+    if not all(
+        [
+            WATSON_DISCOVERY_API_KEY,
+            WATSON_DISCOVERY_URL,
+            WATSON_DISCOVERY_PROJECT_ID,
+            WATSON_DISCOVERY_COLLECTION_ID,
+        ]
+    ):
+        return None
+    authenticator = IAMAuthenticator(WATSON_DISCOVERY_API_KEY)
+    client = DiscoveryV2(version="2023-03-31", authenticator=authenticator)
+    client.set_service_url(WATSON_DISCOVERY_URL)
+    _discovery_client = client
+    return client
+
+
+def _split_text(text: str, chunk_size: int = 800, overlap: int = 120):
+    if not text:
+        return []
+    cleaned = " ".join(text.split())
+    chunks = []
+    start = 0
+    while start < len(cleaned):
+        end = min(start + chunk_size, len(cleaned))
+        chunks.append(cleaned[start:end])
+        if end == len(cleaned):
+            break
+        start = max(end - overlap, 0)
+    return chunks
+
+
+def _index_contrato_pdf(db: Session, contrato: models.Contrato):
+    if not contrato.archivo_pdf:
+        return 0
+    texto = _extract_text_from_pdf(contrato.archivo_pdf)
+    if not texto:
+        logger.info("Contrato %s sin texto extraído", contrato.id)
+        return 0
+    chunks = _split_text(texto)
+    total = crud.replace_contrato_documentos(db, contrato.id, chunks)
+    logger.info("Contrato %s indexado localmente con %s fragmentos", contrato.id, total)
+
+    discovery_client = _get_discovery_client()
+    if discovery_client:
+        try:
+            metadata = json.dumps(
+                {
+                    "contrato_id": contrato.id,
+                    "cliente_id": contrato.cliente_id,
+                    "cliente_nombre": contrato.cliente.nombre if contrato.cliente else "",
+                }
+            )
+            with open(contrato.archivo_pdf, "rb") as file:
+                discovery_client.add_document(
+                    project_id=WATSON_DISCOVERY_PROJECT_ID,
+                    collection_id=WATSON_DISCOVERY_COLLECTION_ID,
+                    file=file,
+                    filename=os.path.basename(contrato.archivo_pdf),
+                    file_content_type="application/pdf",
+                    metadata=metadata,
+                )
+            logger.info("Contrato %s indexado en Watson Discovery", contrato.id)
+        except ApiException as exc:
+            logger.exception("Error al indexar contrato en Watson Discovery: %s", exc)
+        except Exception as exc:
+            logger.exception("Error inesperado en Watson Discovery: %s", exc)
+
+    return total
+
+
+def _validate_simulacion_request(request: schemas.SimulacionAhorroRequest):
+    if request.precio_solensa <= 0:
+        raise HTTPException(status_code=400, detail="El precio Solensa debe ser mayor a 0")
+    if request.precio_alternativo <= 0:
+        raise HTTPException(status_code=400, detail="El precio alternativo debe ser mayor a 0")
+    if request.volumen_estimado is not None and request.volumen_estimado <= 0:
+        raise HTTPException(status_code=400, detail="El volumen estimado debe ser mayor a 0")
+
+
+def _build_propuesta_pdf(request: schemas.PropuestaAhorroRequest, simulacion: dict):
+    buffer = io.BytesIO()
+    pdf = canvas.Canvas(buffer, pagesize=letter)
+    width, height = letter
+    y = height - 50
+
+    pdf.setFont("Helvetica-Bold", 16)
+    pdf.drawString(40, y, "Propuesta de ahorro energético")
+    y -= 24
+    pdf.setFont("Helvetica", 10)
+    pdf.drawString(40, y, f"Fecha de emisión: {datetime.utcnow().date().isoformat()}")
+    y -= 24
+
+    pdf.setFont("Helvetica-Bold", 12)
+    pdf.drawString(40, y, "Datos del prospecto")
+    y -= 18
+    pdf.setFont("Helvetica", 10)
+    pdf.drawString(40, y, f"Nombre: {request.prospecto_nombre}")
+    y -= 14
+    if request.prospecto_empresa:
+        pdf.drawString(40, y, f"Empresa: {request.prospecto_empresa}")
+        y -= 14
+    if request.prospecto_email:
+        pdf.drawString(40, y, f"Email: {request.prospecto_email}")
+        y -= 14
+    if request.prospecto_telefono:
+        pdf.drawString(40, y, f"Teléfono: {request.prospecto_telefono}")
+        y -= 14
+
+    y -= 10
+    pdf.setFont("Helvetica-Bold", 12)
+    pdf.drawString(40, y, "Resumen de simulación")
+    y -= 18
+    pdf.setFont("Helvetica", 10)
+    pdf.drawString(40, y, f"Cliente referencia: {simulacion['cliente_nombre']}")
+    y -= 14
+    pdf.drawString(40, y, f"Periodo analizado: {simulacion['periodo_inicio']} → {simulacion['periodo_fin']}")
+    y -= 14
+    pdf.drawString(40, y, f"Volumen base ({simulacion['fuente_volumen']}): {simulacion['volumen_base']:.2f}")
+    y -= 14
+    pdf.drawString(40, y, f"Precio Solensa: {simulacion['precio_solensa']:.2f}")
+    y -= 14
+    pdf.drawString(40, y, f"Precio alternativo: {simulacion['precio_alternativo']:.2f}")
+    y -= 14
+    pdf.drawString(40, y, f"Costo Solensa: {simulacion['costo_solensa']:.2f}")
+    y -= 14
+    pdf.drawString(40, y, f"Costo alternativo: {simulacion['costo_alternativo']:.2f}")
+    y -= 14
+    pdf.drawString(40, y, f"Ahorro estimado: {simulacion['ahorro_estimado']:.2f}")
+    y -= 14
+    pdf.drawString(40, y, f"Porcentaje de ahorro: {simulacion['porcentaje_ahorro']:.1f}%")
+    y -= 20
+
+    if request.notas:
+        pdf.setFont("Helvetica-Bold", 12)
+        pdf.drawString(40, y, "Notas")
+        y -= 16
+        pdf.setFont("Helvetica", 10)
+        for line in request.notas.splitlines():
+            if y < 60:
+                pdf.showPage()
+                y = height - 50
+                pdf.setFont("Helvetica", 10)
+            pdf.drawString(40, y, line)
+            y -= 12
+
+    pdf.showPage()
+    pdf.save()
+    buffer.seek(0)
+    return buffer
 
 
 @app.post("/contratos/", response_model=schemas.Contrato)
@@ -417,6 +633,304 @@ def api_read_dashboard_trend(
         fecha_fin=fecha_fin,
         db=db,
     )
+
+
+# endpoints para Proyecciones de reabastecimiento
+@app.get("/proyecciones", response_model=list[schemas.ProyeccionReabastecimiento])
+def read_proyecciones(
+    cliente_id: Optional[int] = None,
+    fecha_inicio: Optional[date] = None,
+    fecha_fin: Optional[date] = None,
+    db: Session = Depends(get_db)
+):
+    return crud.get_proyecciones_reabastecimiento(
+        db,
+        cliente_id=cliente_id,
+        fecha_inicio=fecha_inicio,
+        fecha_fin=fecha_fin,
+    )
+
+
+@api_router.get("/proyecciones", response_model=list[schemas.ProyeccionReabastecimiento])
+def api_read_proyecciones(
+    cliente_id: Optional[int] = None,
+    fecha_inicio: Optional[date] = None,
+    fecha_fin: Optional[date] = None,
+    db: Session = Depends(get_db)
+):
+    return read_proyecciones(
+        cliente_id=cliente_id,
+        fecha_inicio=fecha_inicio,
+        fecha_fin=fecha_fin,
+        db=db,
+    )
+
+
+@app.get("/proyecciones/export")
+def export_proyecciones(
+    cliente_id: Optional[int] = None,
+    fecha_inicio: Optional[date] = None,
+    fecha_fin: Optional[date] = None,
+    db: Session = Depends(get_db)
+):
+    proyecciones = crud.get_proyecciones_reabastecimiento(
+        db,
+        cliente_id=cliente_id,
+        fecha_inicio=fecha_inicio,
+        fecha_fin=fecha_fin,
+    )
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow([
+        "cliente_id",
+        "cliente_nombre",
+        "periodo_inicio",
+        "periodo_fin",
+        "consumo_promedio_diario",
+        "almacenamiento_estimado",
+        "dias_para_reabastecimiento",
+        "fecha_reabastecimiento_estimada",
+    ])
+    for item in proyecciones:
+        writer.writerow([
+            item["cliente_id"],
+            item["cliente_nombre"],
+            item["periodo_inicio"],
+            item["periodo_fin"],
+            item["consumo_promedio_diario"],
+            item["almacenamiento_estimado"],
+            item.get("dias_para_reabastecimiento"),
+            item.get("fecha_reabastecimiento_estimada"),
+        ])
+    output.seek(0)
+    return StreamingResponse(
+        output,
+        media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=proyecciones_reabastecimiento.csv"},
+    )
+
+
+@api_router.get("/proyecciones/export")
+def api_export_proyecciones(
+    cliente_id: Optional[int] = None,
+    fecha_inicio: Optional[date] = None,
+    fecha_fin: Optional[date] = None,
+    db: Session = Depends(get_db)
+):
+    return export_proyecciones(
+        cliente_id=cliente_id,
+        fecha_inicio=fecha_inicio,
+        fecha_fin=fecha_fin,
+        db=db,
+    )
+
+
+@app.get("/proyecciones/export/pdf")
+def export_proyecciones_pdf(
+    cliente_id: Optional[int] = None,
+    fecha_inicio: Optional[date] = None,
+    fecha_fin: Optional[date] = None,
+    db: Session = Depends(get_db)
+):
+    proyecciones = crud.get_proyecciones_reabastecimiento(
+        db,
+        cliente_id=cliente_id,
+        fecha_inicio=fecha_inicio,
+        fecha_fin=fecha_fin,
+    )
+    buffer = io.BytesIO()
+    pdf = canvas.Canvas(buffer, pagesize=letter)
+    width, height = letter
+    y = height - 40
+
+    pdf.setFont("Helvetica-Bold", 14)
+    pdf.drawString(40, y, "Proyecciones de reabastecimiento")
+    y -= 30
+
+    pdf.setFont("Helvetica", 10)
+    for item in proyecciones:
+        if y < 80:
+            pdf.showPage()
+            y = height - 40
+        pdf.drawString(40, y, f"Cliente: {item['cliente_nombre']} (ID {item['cliente_id']})")
+        y -= 14
+        pdf.drawString(40, y, f"Periodo: {item['periodo_inicio']} → {item['periodo_fin']}")
+        y -= 14
+        pdf.drawString(40, y, f"Consumo promedio diario: {item['consumo_promedio_diario']:.2f}")
+        y -= 14
+        pdf.drawString(40, y, f"Almacenamiento estimado: {item['almacenamiento_estimado']:.2f}")
+        y -= 14
+        dias = item.get("dias_para_reabastecimiento")
+        fecha = item.get("fecha_reabastecimiento_estimada")
+        pdf.drawString(40, y, f"Días para reabastecer: {dias:.1f}" if dias is not None else "Días para reabastecer: N/D")
+        y -= 14
+        pdf.drawString(40, y, f"Fecha estimada: {fecha}" if fecha else "Fecha estimada: N/D")
+        y -= 24
+
+    pdf.save()
+    buffer.seek(0)
+    return StreamingResponse(
+        buffer,
+        media_type="application/pdf",
+        headers={"Content-Disposition": "attachment; filename=proyecciones_reabastecimiento.pdf"},
+    )
+
+
+@api_router.get("/proyecciones/export/pdf")
+def api_export_proyecciones_pdf(
+    cliente_id: Optional[int] = None,
+    fecha_inicio: Optional[date] = None,
+    fecha_fin: Optional[date] = None,
+    db: Session = Depends(get_db)
+):
+    return export_proyecciones_pdf(
+        cliente_id=cliente_id,
+        fecha_inicio=fecha_inicio,
+        fecha_fin=fecha_fin,
+        db=db,
+    )
+
+
+@app.post("/rag/reindex", response_model=schemas.RagIndexResponse)
+def reindex_rag(request: schemas.RagIndexRequest, db: Session = Depends(get_db)):
+    contratos_query = db.query(models.Contrato)
+    if request.contrato_id:
+        contratos_query = contratos_query.filter(models.Contrato.id == request.contrato_id)
+    contratos = contratos_query.all()
+    total_contratos = 0
+    total_docs = 0
+    for contrato in contratos:
+        total_docs += _index_contrato_pdf(db, contrato)
+        total_contratos += 1
+    return {
+        "contratos_indexados": total_contratos,
+        "documentos_indexados": total_docs,
+    }
+
+
+@api_router.post("/rag/reindex", response_model=schemas.RagIndexResponse)
+def api_reindex_rag(request: schemas.RagIndexRequest, db: Session = Depends(get_db)):
+    return reindex_rag(request=request, db=db)
+
+
+@app.post("/rag/query", response_model=schemas.RagQueryResponse)
+def rag_query(request: schemas.RagQueryRequest, db: Session = Depends(get_db)):
+    if not request.pregunta.strip():
+        raise HTTPException(status_code=400, detail="La pregunta es obligatoria")
+    discovery_client = _get_discovery_client()
+    if discovery_client:
+        try:
+            filter_expr = None
+            if request.cliente_id:
+                filter_expr = f"metadata.cliente_id:{request.cliente_id}"
+
+            response = discovery_client.query(
+                project_id=WATSON_DISCOVERY_PROJECT_ID,
+                collection_id=WATSON_DISCOVERY_COLLECTION_ID,
+                natural_language_query=request.pregunta,
+                filter=filter_expr,
+                passages=True,
+                passages_count=max(request.top_k, 1),
+                count=max(request.top_k, 1),
+            ).get_result()
+
+            passages = response.get("passages", [])
+            respuesta = " ".join(
+                (p.get("passage_text") or "").strip() for p in passages[: request.top_k]
+            ).strip()
+
+            fuentes = []
+            for result in response.get("results", [])[: request.top_k]:
+                metadata = result.get("metadata", {}) or {}
+                fragmento = (
+                    result.get("text")
+                    or result.get("excerpt")
+                    or (passages[0].get("passage_text") if passages else "")
+                    or ""
+                )
+                fuentes.append(
+                    {
+                        "contrato_id": metadata.get("contrato_id", 0),
+                        "cliente_nombre": metadata.get("cliente_nombre", ""),
+                        "score": float(result.get("score", 0)),
+                        "fragmento": fragmento[:240].replace("\n", " ").strip(),
+                    }
+                )
+
+            if not respuesta:
+                respuesta = "No se encontró información relevante en los contratos indexados."
+
+            return {
+                "pregunta": request.pregunta,
+                "respuesta": respuesta,
+                "fuentes": fuentes,
+            }
+        except ApiException as exc:
+            logger.exception("Error en consulta Watson Discovery: %s", exc)
+        except Exception as exc:
+            logger.exception("Error inesperado en Watson Discovery: %s", exc)
+
+    result = crud.query_rag(
+        db,
+        pregunta=request.pregunta,
+        cliente_id=request.cliente_id,
+        top_k=request.top_k,
+    )
+    return {
+        "pregunta": request.pregunta,
+        "respuesta": result["respuesta"],
+        "fuentes": result["fuentes"],
+    }
+
+
+@api_router.post("/rag/query", response_model=schemas.RagQueryResponse)
+def api_rag_query(request: schemas.RagQueryRequest, db: Session = Depends(get_db)):
+    return rag_query(request=request, db=db)
+
+
+@app.post("/simulaciones/ahorro", response_model=schemas.SimulacionAhorroResponse)
+def create_simulacion_ahorro(
+    request: schemas.SimulacionAhorroRequest,
+    db: Session = Depends(get_db)
+):
+    _validate_simulacion_request(request)
+    result = crud.compute_simulacion_ahorro(db, request)
+    if not result:
+        raise HTTPException(status_code=404, detail="Cliente no encontrado")
+    return result
+
+
+@api_router.post("/simulaciones/ahorro", response_model=schemas.SimulacionAhorroResponse)
+def api_create_simulacion_ahorro(
+    request: schemas.SimulacionAhorroRequest,
+    db: Session = Depends(get_db)
+):
+    return create_simulacion_ahorro(request=request, db=db)
+
+
+@app.post("/simulaciones/ahorro/propuesta")
+def create_propuesta_ahorro(
+    request: schemas.PropuestaAhorroRequest,
+    db: Session = Depends(get_db)
+):
+    _validate_simulacion_request(request)
+    simulacion = crud.compute_simulacion_ahorro(db, request)
+    if not simulacion:
+        raise HTTPException(status_code=404, detail="Cliente no encontrado")
+    buffer = _build_propuesta_pdf(request, simulacion)
+    return StreamingResponse(
+        buffer,
+        media_type="application/pdf",
+        headers={"Content-Disposition": "attachment; filename=propuesta_ahorro.pdf"},
+    )
+
+
+@api_router.post("/simulaciones/ahorro/propuesta")
+def api_create_propuesta_ahorro(
+    request: schemas.PropuestaAhorroRequest,
+    db: Session = Depends(get_db)
+):
+    return create_propuesta_ahorro(request=request, db=db)
 
 
 @app.post("/alertas/", response_model=schemas.Alerta)

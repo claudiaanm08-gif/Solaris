@@ -106,6 +106,17 @@ class TrendResponse(BaseModel):
     puntos: list[TrendPoint]
 
 
+class ProyeccionReabastecimiento(BaseModel):
+    cliente_id: int
+    cliente_nombre: str
+    periodo_inicio: date
+    periodo_fin: date
+    consumo_promedio_diario: float
+    almacenamiento_estimado: float
+    dias_para_reabastecimiento: Optional[float] = None
+    fecha_reabastecimiento_estimada: Optional[date] = None
+
+
 class AlertaBase(BaseModel):
     cliente_id: Optional[int] = None
     nivel: str
@@ -135,3 +146,63 @@ class Cotizacion(CotizacionBase):
     id: int
     class Config:
         from_attributes = True
+
+
+class SimulacionAhorroRequest(BaseModel):
+    cliente_id: int
+    fecha_inicio: Optional[date] = None
+    fecha_fin: Optional[date] = None
+    precio_solensa: float
+    precio_alternativo: float
+    volumen_estimado: Optional[float] = None
+
+
+class SimulacionAhorroResponse(BaseModel):
+    cliente_id: int
+    cliente_nombre: str
+    periodo_inicio: date
+    periodo_fin: date
+    volumen_base: float
+    fuente_volumen: str
+    precio_solensa: float
+    precio_alternativo: float
+    costo_solensa: float
+    costo_alternativo: float
+    ahorro_estimado: float
+    porcentaje_ahorro: float
+
+
+class PropuestaAhorroRequest(SimulacionAhorroRequest):
+    prospecto_nombre: str
+    prospecto_empresa: Optional[str] = None
+    prospecto_email: Optional[str] = None
+    prospecto_telefono: Optional[str] = None
+    notas: Optional[str] = None
+
+
+class RagIndexRequest(BaseModel):
+    contrato_id: Optional[int] = None
+
+
+class RagIndexResponse(BaseModel):
+    contratos_indexados: int
+    documentos_indexados: int
+
+
+class RagQueryRequest(BaseModel):
+    pregunta: str
+    cliente_id: Optional[int] = None
+    top_k: int = 3
+
+
+class RagFuente(BaseModel):
+    contrato_id: int
+    cliente_nombre: str
+    score: float
+    fragmento: str
+
+
+class RagQueryResponse(BaseModel):
+    pregunta: str
+    respuesta: str
+    fuentes: list[RagFuente]

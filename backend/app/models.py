@@ -32,6 +32,7 @@ class Contrato(Base):
     cliente = relationship("Cliente", back_populates="contratos")
     entregas = relationship("Entrega", back_populates="contrato")
     consumos = relationship("Consumo", back_populates="contrato")
+    documentos = relationship("ContratoDocumento", back_populates="contrato", cascade="all, delete-orphan")
 
 
 class Entrega(Base):
@@ -68,3 +69,15 @@ class Alerta(Base):
     fecha = Column(DateTime, default=datetime.utcnow, nullable=False)
 
     cliente = relationship("Cliente")
+
+
+class ContratoDocumento(Base):
+    __tablename__ = "contrato_documentos"
+
+    id = Column(Integer, primary_key=True, index=True)
+    contrato_id = Column(Integer, ForeignKey("contratos.id"), nullable=False)
+    chunk_index = Column(Integer, nullable=False)
+    contenido = Column(Text, nullable=False)
+    fecha_indexado = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    contrato = relationship("Contrato", back_populates="documentos")
