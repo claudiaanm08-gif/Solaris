@@ -8,34 +8,34 @@ import ToastProvider from './components/ToastProvider'
 const theme = createTheme({
   palette: {
     mode: 'light',
-    primary: { main: '#064E3B', contrastText: '#FFFFFF' },
-    secondary: { main: '#065F46' },
-    success: { main: '#10B981' },
+    primary: { main: '#1E4D3A', contrastText: '#FFFFFF' },
+    secondary: { main: '#7FA742' },
+    success: { main: '#7FA742' },
     warning: { main: '#F59E0B' },
     error: { main: '#EF4444' },
-    background: { default: '#F8FAFC', paper: '#FFFFFF' },
-    text: { primary: '#0F172A', secondary: '#64748B' }
+    background: { default: '#F4F6F3', paper: '#FFFFFF' },
+    text: { primary: '#1B1F1D', secondary: '#5F6B63' }
   },
-  shape: { borderRadius: 18 },
+  shape: { borderRadius: 10 },
   typography: {
     fontFamily: "'Inter', 'Segoe UI', system-ui, -apple-system, sans-serif",
-    h1: { fontWeight: 800, letterSpacing: '-0.03em' },
-    h2: { fontWeight: 700, letterSpacing: '-0.02em' },
-    h3: { fontWeight: 600, letterSpacing: '-0.02em' },
-    body1: { fontSize: '0.95rem', lineHeight: 1.6 },
-    body2: { fontSize: '0.875rem', lineHeight: 1.5 },
+    h1: { fontSize: '2.8rem', fontWeight: 800, letterSpacing: '-0.03em' },
+    h2: { fontSize: '2.2rem', fontWeight: 750, letterSpacing: '-0.02em' },
+    h3: { fontWeight: 650, letterSpacing: '-0.02em' },
+    body1: { fontSize: '0.98rem', lineHeight: 1.65 },
+    body2: { fontSize: '0.875rem', lineHeight: 1.55 },
     button: { textTransform: 'none', fontWeight: 600 }
   },
   components: {
     MuiButton: {
       styleOverrides: {
         root: {
-          borderRadius: 14,
-          boxShadow: '0 10px 25px -12px rgba(6,78,59,0.35)',
+          borderRadius: 10,
+          boxShadow: '0 8px 18px -12px rgba(30, 77, 58, 0.3)',
           transition: 'all 200ms ease',
           '&:hover': {
             transform: 'translateY(-2px)',
-            boxShadow: '0 14px 30px -12px rgba(6,78,59,0.45)'
+            boxShadow: '0 10px 22px -12px rgba(30, 77, 58, 0.35)'
           },
           '&:active': { transform: 'scale(0.98)' }
         }
@@ -44,8 +44,8 @@ const theme = createTheme({
     MuiPaper: {
       styleOverrides: {
         root: {
-          borderRadius: 20,
-          boxShadow: '0 8px 24px rgba(15, 23, 42, 0.06)'
+          borderRadius: 10,
+          boxShadow: '0 10px 24px rgba(15, 23, 42, 0.06)'
         }
       }
     },
@@ -55,10 +55,10 @@ const theme = createTheme({
           transition: 'all 200ms ease',
           '& .MuiOutlinedInput-root': {
             borderRadius: 14,
-            '&:hover fieldset': { borderColor: '#064E3B' },
+            '&:hover fieldset': { borderColor: '#1E4D3A' },
             '&.Mui-focused fieldset': {
-              borderColor: '#064E3B',
-              boxShadow: '0 0 0 3px rgba(6,78,59,0.12)'
+              borderColor: '#1E4D3A',
+              boxShadow: '0 0 0 3px rgba(30, 77, 58, 0.16)'
             }
           }
         }

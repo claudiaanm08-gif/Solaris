@@ -29,9 +29,8 @@ function App() {
     <Container maxWidth={false} className="app theme-light">
       <div className="layout">
         <aside className="sidebar">
-          <div className="sidebar__brand">
-            <span className="sidebar__logo">Solensa</span>
-            <span className="sidebar__tagline">Plataforma operativa</span>
+          <div className="sidebar__brand sidebar-header">
+            <h1 className="sidebar__logo">Solensa</h1>
           </div>
           <nav className="sidebar__nav">
             {modules.map((module) => (
